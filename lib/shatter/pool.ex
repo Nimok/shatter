@@ -4,7 +4,7 @@ defmodule Shatter.Pool do
   import Bitwise
 
   @enforce_keys [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]
-  defstruct [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]
+  defstruct [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, local: false]
 
   @type ip :: {0..255, 0..255, 0..255, 0..255}
   @type t :: %__MODULE__{}
