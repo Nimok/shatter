@@ -12,16 +12,18 @@ defmodule Shatter.Network.Listener do
     {port, opts} = Keyword.pop(opts, :port, Application.get_env(:shatter, :dhcp_port, @default_port))
     {handler_sup, opts} = Keyword.pop(opts, :handler_supervisor, HandlerSupervisor)
     {handler_reg, opts} = Keyword.pop(opts, :handler_registry, HandlerRegistry)
-    GenServer.start_link(__MODULE__, {port, handler_sup, handler_reg}, opts)
+    {handler_timeout, opts} = Keyword.pop(opts, :handler_timeout, nil)
+    GenServer.start_link(__MODULE__, {port, handler_sup, handler_reg, handler_timeout}, opts)
   end
 
   @spec port(GenServer.server()) :: :inet.port_number()
   def port(server), do: GenServer.call(server, :port)
 
   @impl true
-  def init({port, handler_sup, handler_reg}) do
+  def init({port, handler_sup, handler_reg, handler_timeout}) do
     {:ok, socket} = :gen_udp.open(port, [:binary, active: true, broadcast: true, reuseaddr: true])
-    {:ok, %{socket: socket, port: port, handler_supervisor: handler_sup, handler_registry: handler_reg}}
+    {:ok, port} = :inet.port(socket)
+    {:ok, %{socket: socket, port: port, handler_supervisor: handler_sup, handler_registry: handler_reg, handler_timeout: handler_timeout}}
   end
 
   @impl true
@@ -46,16 +48,11 @@ defmodule Shatter.Network.Listener do
   defp dispatch(packet, client, state) do
     case message_type(packet) do
       1 ->
-        DynamicSupervisor.start_child(
-          state.handler_supervisor,
-          {RequestHandler,
-           [
-             socket: state.socket,
-             client: client,
-             packet: packet,
-             handler_registry: state.handler_registry
-           ]}
-        )
+        handler_opts =
+          [socket: state.socket, client: client, packet: packet, handler_registry: state.handler_registry] ++
+            if state.handler_timeout, do: [timeout: state.handler_timeout], else: []
+
+        DynamicSupervisor.start_child(state.handler_supervisor, {RequestHandler, handler_opts})
 
       3 ->
         case Registry.lookup(state.handler_registry, packet.xid) do

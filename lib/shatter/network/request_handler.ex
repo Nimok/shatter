@@ -17,9 +17,14 @@ defmodule Shatter.Network.RequestHandler do
     handler_registry = Keyword.get(opts, :handler_registry, Shatter.Network.HandlerRegistry)
     timeout = Keyword.get(opts, :timeout, Application.get_env(:shatter, :dhcp_handler_timeout, @default_timeout))
 
-    Registry.register(handler_registry, packet.xid, :handler)
+    case Registry.register(handler_registry, packet.xid, :handler) do
+      {:ok, _} ->
+        {:ok, %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout},
+         {:continue, :send_offer}}
 
-    {:ok, %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout}, {:continue, :send_offer}}
+      {:error, {:already_registered, _}} ->
+        {:stop, :normal}
+    end
   end
 
   @impl true
@@ -78,7 +83,7 @@ defmodule Shatter.Network.RequestHandler do
     do: :gen_udp.send(socket, {255, 255, 255, 255}, 68, data)
 
   defp send_packet(socket, _client_ip, _client_port, giaddr, data),
-    do: :gen_udp.send(socket, giaddr, 68, data)
+    do: :gen_udp.send(socket, giaddr, 67, data)
 
   defp trim_chaddr(%{chaddr: chaddr, hlen: hlen}), do: binary_part(chaddr, 0, hlen)
 

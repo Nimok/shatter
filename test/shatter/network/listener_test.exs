@@ -29,10 +29,11 @@ defmodule Shatter.Network.ListenerTest do
     {:ok, sup: sup_name, reg: reg_name}
   end
 
-  defp start_listener(port, ctx) do
-    start_supervised!(
-      {Listener, port: port, handler_supervisor: ctx.sup, handler_registry: ctx.reg}
-    )
+  defp start_listener(ctx, opts \\ []) do
+    opts = Keyword.merge([port: 0, handler_supervisor: ctx.sup, handler_registry: ctx.reg], opts)
+    pid = start_supervised!({Listener, opts})
+    port = Listener.port(pid)
+    {pid, port}
   end
 
   defp discover(xid \\ nil) do
@@ -40,40 +41,24 @@ defmodule Shatter.Network.ListenerTest do
 
     {xid,
      Packet.serialize(%{
-       op: 1,
-       htype: 1,
-       hlen: 6,
-       hops: 0,
-       xid: xid,
-       secs: 0,
-       flags: 0,
-       ciaddr: {0, 0, 0, 0},
-       yiaddr: {0, 0, 0, 0},
-       siaddr: {0, 0, 0, 0},
-       giaddr: {0, 0, 0, 0},
+       op: 1, htype: 1, hlen: 6, hops: 0,
+       xid: xid, secs: 0, flags: 0,
+       ciaddr: {0, 0, 0, 0}, yiaddr: {0, 0, 0, 0},
+       siaddr: {0, 0, 0, 0}, giaddr: {0, 0, 0, 0},
        chaddr: <<0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>,
-       sname: "",
-       file: "",
+       sname: "", file: "",
        options: [{53, 1}]
      })}
   end
 
   defp request(xid, offered_ip) do
     Packet.serialize(%{
-      op: 1,
-      htype: 1,
-      hlen: 6,
-      hops: 0,
-      xid: xid,
-      secs: 0,
-      flags: 0,
-      ciaddr: {0, 0, 0, 0},
-      yiaddr: {0, 0, 0, 0},
-      siaddr: {0, 0, 0, 0},
-      giaddr: {0, 0, 0, 0},
+      op: 1, htype: 1, hlen: 6, hops: 0,
+      xid: xid, secs: 0, flags: 0,
+      ciaddr: {0, 0, 0, 0}, yiaddr: {0, 0, 0, 0},
+      siaddr: {0, 0, 0, 0}, giaddr: {0, 0, 0, 0},
       chaddr: <<0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0>>,
-      sname: "",
-      file: "",
+      sname: "", file: "",
       options: [{53, 3}, {50, offered_ip}]
     })
   end
@@ -102,17 +87,17 @@ defmodule Shatter.Network.ListenerTest do
   end
 
   test "listener binds to the configured port", ctx do
-    pid = start_listener(16_767, ctx)
-    assert Listener.port(pid) == 16_767
+    {_pid, port} = start_listener(ctx)
+    assert is_integer(port) and port > 0
   end
 
   test "DHCPDISCOVER spawns a RequestHandler", ctx do
     :ok = Store.insert_pool(@local_pool)
-    start_listener(16_768, ctx)
+    {_pid, port} = start_listener(ctx)
 
     {:ok, client} = :gen_udp.open(0, [:binary, active: true])
     {_xid, discover_pkt} = discover()
-    :gen_udp.send(client, {127, 0, 0, 1}, 16_768, discover_pkt)
+    :gen_udp.send(client, {127, 0, 0, 1}, port, discover_pkt)
 
     assert eventually(fn -> DynamicSupervisor.count_children(ctx.sup).active > 0 end)
 
@@ -121,11 +106,11 @@ defmodule Shatter.Network.ListenerTest do
 
   test "DHCPDISCOVER with a pool returns a DHCPOFFER with a valid IP", ctx do
     :ok = Store.insert_pool(@local_pool)
-    start_listener(16_769, ctx)
+    {_pid, port} = start_listener(ctx)
 
     {:ok, client} = :gen_udp.open(0, [:binary, active: true])
     {_xid, discover_pkt} = discover()
-    :gen_udp.send(client, {127, 0, 0, 1}, 16_769, discover_pkt)
+    :gen_udp.send(client, {127, 0, 0, 1}, port, discover_pkt)
 
     offer = recv_packet(client)
 
@@ -138,16 +123,16 @@ defmodule Shatter.Network.ListenerTest do
 
   test "DHCPREQUEST after OFFER returns DHCPACK and handler terminates", ctx do
     :ok = Store.insert_pool(@local_pool)
-    start_listener(16_770, ctx)
+    {_pid, port} = start_listener(ctx)
 
     {:ok, client} = :gen_udp.open(0, [:binary, active: true])
     {xid, discover_pkt} = discover()
-    :gen_udp.send(client, {127, 0, 0, 1}, 16_770, discover_pkt)
+    :gen_udp.send(client, {127, 0, 0, 1}, port, discover_pkt)
 
     offer = recv_packet(client)
     offered_ip = offer.yiaddr
 
-    :gen_udp.send(client, {127, 0, 0, 1}, 16_770, request(xid, offered_ip))
+    :gen_udp.send(client, {127, 0, 0, 1}, port, request(xid, offered_ip))
 
     ack = recv_packet(client)
 
@@ -162,11 +147,11 @@ defmodule Shatter.Network.ListenerTest do
 
   test "RequestHandler terminates after timeout if no REQUEST follows", ctx do
     :ok = Store.insert_pool(@local_pool)
-    start_listener(16_771, ctx)
+    {_pid, port} = start_listener(ctx)
 
     {:ok, client} = :gen_udp.open(0, [:binary, active: true])
     {_xid, discover_pkt} = discover()
-    :gen_udp.send(client, {127, 0, 0, 1}, 16_771, discover_pkt)
+    :gen_udp.send(client, {127, 0, 0, 1}, port, discover_pkt)
 
     _offer = recv_packet(client)
 

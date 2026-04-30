@@ -3,6 +3,8 @@ defmodule Shatter.Store do
 
   use GenServer
 
+  import Bitwise, only: [&&&: 2]
+
   alias Shatter.{Lease, Pool}
 
   # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -48,10 +50,31 @@ defmodule Shatter.Store do
   defp create_table(name, opts) do
     case :mnesia.create_table(name, opts) do
       {:atomic, :ok} -> :ok
-      {:aborted, {:already_exists, ^name}} -> :ok
+      {:aborted, {:already_exists, ^name}} -> migrate_table(name, opts)
       {:aborted, reason} -> raise "failed to create Mnesia table #{inspect(name)}: #{inspect(reason)}"
     end
   end
+
+  defp migrate_table(:pools, _opts) do
+    case :mnesia.table_info(:pools, :attributes) do
+      attrs when length(attrs) == 7 ->
+        new_attrs = [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, :local]
+
+        {:atomic, :ok} =
+          :mnesia.transform_table(
+            :pools,
+            fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, false} end,
+            new_attrs
+          )
+
+      _ ->
+        :ok
+    end
+
+    :ok
+  end
+
+  defp migrate_table(_name, _opts), do: :ok
 
   # ── Lease API ──────────────────────────────────────────────────────────────
 
@@ -148,7 +171,7 @@ defmodule Shatter.Store do
   def find_pool_for_giaddr(giaddr) do
     case list_pools() do
       {:ok, pools} ->
-        match = Enum.find(pools, &(not &1.local and ip_in_pool?(&1, giaddr)))
+        match = Enum.find(pools, &(not &1.local and same_subnet?(&1, giaddr)))
         if match, do: {:ok, match}, else: {:error, :no_pool}
 
       err ->
@@ -181,8 +204,12 @@ defmodule Shatter.Store do
     %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds, local: local}
   end
 
-  defp ip_in_pool?(%Pool{range_start: start, range_end: stop}, ip) do
-    ip_to_int(start) <= ip_to_int(ip) and ip_to_int(ip) <= ip_to_int(stop)
+  defp record_to_pool({:pools, id, range_start, range_end, subnet_mask, gateway, dns_servers, lease_duration_seconds}) do
+    %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds, local: false}
+  end
+
+  defp same_subnet?(%Pool{range_start: start, subnet_mask: mask}, ip) do
+    (ip_to_int(ip) &&& ip_to_int(mask)) == (ip_to_int(start) &&& ip_to_int(mask))
   end
 
   defp ip_to_int({a, b, c, d}), do: a * 16_777_216 + b * 65_536 + c * 256 + d
