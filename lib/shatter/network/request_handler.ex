@@ -19,7 +19,8 @@ defmodule Shatter.Network.RequestHandler do
 
     case Registry.register(handler_registry, packet.xid, :handler) do
       {:ok, _} ->
-        {:ok, %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout},
+        {:ok,
+         %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout, server_ip: compute_server_ip()},
          {:continue, :send_offer}}
 
       {:error, {:already_registered, _}} ->
@@ -33,7 +34,7 @@ defmodule Shatter.Network.RequestHandler do
       {:ok, pool} ->
         case Shatter.Allocator.allocate(trim_chaddr(state.packet), pool) do
           {:ok, lease} ->
-            offer = build_offer(state.packet, lease, pool)
+            offer = build_offer(state.packet, lease, pool, state.server_ip)
             {client_ip, client_port} = state.client
             send_packet(state.socket, client_ip, client_port, state.packet.giaddr, Shatter.DHCP.Packet.serialize(offer))
             {:noreply, %{state | lease: lease}, state.timeout}
@@ -59,7 +60,7 @@ defmodule Shatter.Network.RequestHandler do
       {:ok, pool} ->
         bound = %{lease | state: :bound}
         :ok = Shatter.Store.update_lease(bound)
-        ack = build_ack(discover, bound, pool)
+        ack = build_ack(discover, bound, pool, state.server_ip)
         {client_ip, client_port} = state.client
         send_packet(socket, client_ip, client_port, discover.giaddr, Shatter.DHCP.Packet.serialize(ack))
         {:stop, :normal, state}
@@ -87,7 +88,7 @@ defmodule Shatter.Network.RequestHandler do
 
   defp trim_chaddr(%{chaddr: chaddr, hlen: hlen}), do: binary_part(chaddr, 0, hlen)
 
-  defp build_offer(discover, lease, pool) do
+  defp build_offer(discover, lease, pool, server_ip) do
     %{
       op: 2,
       htype: discover.htype,
@@ -108,17 +109,17 @@ defmodule Shatter.Network.RequestHandler do
         {1, pool.subnet_mask},
         {3, [pool.gateway]},
         {51, pool.lease_duration_seconds},
-        {54, server_ip()}
+        {54, server_ip}
       ]
     }
   end
 
-  defp build_ack(discover, lease, pool) do
-    offer = build_offer(discover, lease, pool)
+  defp build_ack(discover, lease, pool, server_ip) do
+    offer = build_offer(discover, lease, pool, server_ip)
     %{offer | options: List.keyreplace(offer.options, 53, 0, {53, 5})}
   end
 
-  defp server_ip do
+  defp compute_server_ip do
     case :inet.getifaddrs() do
       {:ok, addrs} ->
         addrs

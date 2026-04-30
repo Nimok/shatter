@@ -40,7 +40,10 @@ defmodule Shatter.Network.IntegrationTest do
 
   # ── Helpers ────────────────────────────────────────────────────────────────
 
-  defp open_client, do: :gen_udp.open(0, [:binary, active: true]) |> elem(1)
+  defp open_client do
+    {:ok, socket} = :gen_udp.open(0, [:binary, active: true])
+    socket
+  end
 
   defp padded_chaddr(mac), do: mac <> :binary.copy(<<0>>, 16 - byte_size(mac))
 

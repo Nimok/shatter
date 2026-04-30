@@ -159,7 +159,7 @@ defmodule Shatter.Store do
     end
   end
 
-  @spec find_pool_for_giaddr(:inet.ip4_address()) :: {:ok, Pool.t()} | {:error, :no_pool}
+  @spec find_pool_for_giaddr(:inet.ip4_address()) :: {:ok, Pool.t()} | {:error, :no_pool | term()}
   def find_pool_for_giaddr({0, 0, 0, 0}) do
     case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_, true}) end) do
       {:ok, [record | _]} -> {:ok, record_to_pool(record)}
