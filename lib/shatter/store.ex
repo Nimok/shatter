@@ -3,8 +3,156 @@ defmodule Shatter.Store do
 
   use GenServer
 
+  alias Shatter.{Lease, Pool}
+
+  # ── Lifecycle ──────────────────────────────────────────────────────────────
+
   def start_link(opts), do: GenServer.start_link(__MODULE__, :ok, opts)
 
   @impl true
-  def init(:ok), do: {:ok, %{}}
+  def init(:ok) do
+    table_type = Application.get_env(:shatter, __MODULE__, []) |> Keyword.get(:table_type, :disc_copies)
+    :ok = ensure_schema(table_type)
+    :ok = ensure_tables(table_type)
+    {:ok, %{}}
+  end
+
+  defp ensure_schema(:ram_copies), do: :ok
+
+  defp ensure_schema(_) do
+    case :mnesia.create_schema([node()]) do
+      :ok -> :ok
+      {:error, {_, {:already_exists, _}}} -> :ok
+    end
+  end
+
+  defp ensure_tables(table_type) do
+    create_table(:leases, [
+      {:attributes, [:ip, :mac, :expires_at, :state, :hostname, :client_id, :requested_options, :granted_by_node]},
+      {:index, [:mac]},
+      {table_type, [node()]}
+    ])
+
+    create_table(:pools, [
+      {:attributes, [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]},
+      {table_type, [node()]}
+    ])
+
+    :mnesia.wait_for_tables([:leases, :pools], 5_000)
+    :ok
+  end
+
+  defp create_table(name, opts) do
+    case :mnesia.create_table(name, opts) do
+      {:atomic, :ok} -> :ok
+      {:aborted, {:already_exists, ^name}} -> :ok
+    end
+  end
+
+  # ── Lease API ──────────────────────────────────────────────────────────────
+
+  @spec insert_lease(Lease.t()) :: :ok | {:error, term()}
+  def insert_lease(%Lease{} = lease) do
+    case :mnesia.transaction(fn -> :mnesia.write(lease_to_record(lease)) end) do
+      {:atomic, :ok} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @spec get_lease_by_ip(:inet.ip4_address()) :: {:ok, Lease.t()} | {:error, :not_found} | {:error, term()}
+  def get_lease_by_ip(ip) do
+    case txn(fn -> :mnesia.read(:leases, ip) end) do
+      {:ok, [record]} -> {:ok, record_to_lease(record)}
+      {:ok, []} -> {:error, :not_found}
+      err -> err
+    end
+  end
+
+  @spec update_lease(Lease.t()) :: :ok | {:error, term()}
+  def update_lease(%Lease{} = lease), do: insert_lease(lease)
+
+  @spec delete_lease(:inet.ip4_address()) :: :ok | {:error, term()}
+  def delete_lease(ip) do
+    case :mnesia.transaction(fn -> :mnesia.delete(:leases, ip, :write) end) do
+      {:atomic, :ok} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @spec list_leases() :: {:ok, [Lease.t()]} | {:error, term()}
+  def list_leases do
+    case txn(fn -> :mnesia.match_object({:leases, :_, :_, :_, :_, :_, :_, :_, :_}) end) do
+      {:ok, records} -> {:ok, Enum.map(records, &record_to_lease/1)}
+      err -> err
+    end
+  end
+
+  @spec get_lease_by_mac(binary()) :: {:ok, Lease.t()} | {:error, :not_found} | {:error, term()}
+  def get_lease_by_mac(mac) do
+    case txn(fn -> :mnesia.index_read(:leases, mac, :mac) end) do
+      {:ok, [record]} -> {:ok, record_to_lease(record)}
+      {:ok, []} -> {:error, :not_found}
+      err -> err
+    end
+  end
+
+  # ── Pool API ───────────────────────────────────────────────────────────────
+
+  @spec insert_pool(Pool.t()) :: :ok | {:error, term()}
+  def insert_pool(%Pool{} = pool) do
+    case :mnesia.transaction(fn -> :mnesia.write(pool_to_record(pool)) end) do
+      {:atomic, :ok} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @spec get_pool(term()) :: {:ok, Pool.t()} | {:error, :not_found} | {:error, term()}
+  def get_pool(id) do
+    case txn(fn -> :mnesia.read(:pools, id) end) do
+      {:ok, [record]} -> {:ok, record_to_pool(record)}
+      {:ok, []} -> {:error, :not_found}
+      err -> err
+    end
+  end
+
+  @spec delete_pool(term()) :: :ok | {:error, term()}
+  def delete_pool(id) do
+    case :mnesia.transaction(fn -> :mnesia.delete(:pools, id, :write) end) do
+      {:atomic, :ok} -> :ok
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  @spec list_pools() :: {:ok, [Pool.t()]} | {:error, term()}
+  def list_pools do
+    case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_}) end) do
+      {:ok, records} -> {:ok, Enum.map(records, &record_to_pool/1)}
+      err -> err
+    end
+  end
+
+  # ── Helpers ────────────────────────────────────────────────────────────────
+
+  defp txn(fun) do
+    case :mnesia.transaction(fun) do
+      {:atomic, result} -> {:ok, result}
+      {:aborted, reason} -> {:error, reason}
+    end
+  end
+
+  defp lease_to_record(%Lease{} = l) do
+    {:leases, l.ip, l.mac, l.expires_at, l.state, l.hostname, l.client_id, l.requested_options, l.granted_by_node}
+  end
+
+  defp record_to_lease({:leases, ip, mac, expires_at, state, hostname, client_id, requested_options, granted_by_node}) do
+    %Lease{ip: ip, mac: mac, expires_at: expires_at, state: state, hostname: hostname, client_id: client_id, requested_options: requested_options, granted_by_node: granted_by_node}
+  end
+
+  defp pool_to_record(%Pool{} = p) do
+    {:pools, p.id, p.range_start, p.range_end, p.subnet_mask, p.gateway, p.dns_servers, p.lease_duration_seconds}
+  end
+
+  defp record_to_pool({:pools, id, range_start, range_end, subnet_mask, gateway, dns_servers, lease_duration_seconds}) do
+    %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds}
+  end
 end
