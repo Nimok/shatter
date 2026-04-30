@@ -1,6 +1,6 @@
 # Shatter
 
-A distributed DHCPv4 server written in Elixir. Uses Mnesia for replicated lease storage, libcluster for automatic node discovery, and OTP supervision trees for fault isolation. Multiple nodes share a lease database and serve DHCP requests without double-allocating IPs. Favors consistency over availability during network partitions (CP via Mnesia quorum).
+A distributed DHCPv4 server written in Elixir. Uses Mnesia for replicated lease storage, libcluster for automatic node discovery, and OTP supervision trees for fault isolation. Multiple nodes share a lease database and serve DHCP requests without double-allocating IPs. Designed around Mnesia's replicated coordination model; explicit quorum-based partition handling is planned but not yet implemented.
 
 Built as a reference implementation for learning how BEAM primitives map to distributed systems problems.
 
@@ -52,6 +52,8 @@ mix test
 Integration tests run against a real single-node Mnesia instance (`:ram_copies` in test env — no disk state between runs).
 
 ## HTTP API
+
+> **Not yet implemented.** `Shatter.APISupervisor` and `Shatter.API.Router` are part of the supervision tree but the router currently returns 404 for all paths. The planned endpoints are:
 
 | Method | Path | Description |
 |--------|------|-------------|

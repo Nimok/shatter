@@ -3,7 +3,7 @@ defmodule Shatter.Allocator do
 
   alias Shatter.{Lease, Pool}
 
-  @spec allocate(binary(), Pool.t()) :: {:ok, Lease.t()} | {:error, :pool_exhausted}
+  @spec allocate(binary(), Pool.t()) :: {:ok, Lease.t()} | {:error, :pool_exhausted} | {:error, term()}
   def allocate(mac, %Pool{} = pool) do
     :mnesia.transaction(fn ->
       case find_active_lease(mac) do
@@ -25,25 +25,27 @@ defmodule Shatter.Allocator do
     |> case do
       {:atomic, lease} -> {:ok, lease}
       {:aborted, :pool_exhausted} -> {:error, :pool_exhausted}
+      {:aborted, reason} -> {:error, reason}
     end
   end
 
   # ── Private ────────────────────────────────────────────────────────────────
 
   defp find_active_lease(mac) do
-    case :mnesia.index_read(:leases, mac, :mac) do
-      [record] ->
-        lease = record_to_lease(record)
-        if lease.state in [:offered, :bound], do: {:ok, lease}, else: {:error, :not_found}
+    active =
+      :mnesia.index_read(:leases, mac, :mac)
+      |> Enum.map(&record_to_lease/1)
+      |> Enum.filter(&(&1.state in [:offered, :bound]))
 
-      [] ->
-        {:error, :not_found}
+    case active do
+      [] -> {:error, :not_found}
+      leases -> {:ok, Enum.max_by(leases, & &1.expires_at, DateTime)}
     end
   end
 
   defp find_available_ip(%Pool{} = pool) do
     taken = taken_ips()
-    available = pool |> Pool.ip_range() |> Enum.find(fn ip -> ip not in taken end)
+    available = pool |> Pool.ip_range() |> Enum.find(&(not MapSet.member?(taken, &1)))
     if available, do: {:ok, available}, else: {:error, :pool_exhausted}
   end
 
@@ -51,6 +53,7 @@ defmodule Shatter.Allocator do
     :mnesia.match_object({:leases, :_, :_, :_, :_, :_, :_, :_, :_})
     |> Enum.filter(fn {:leases, _ip, _mac, _exp, state, _, _, _, _} -> state in [:offered, :bound] end)
     |> Enum.map(fn {:leases, ip, _, _, _, _, _, _, _} -> ip end)
+    |> MapSet.new()
   end
 
   defp build_lease(ip, mac, %Pool{lease_duration_seconds: dur}) do

@@ -38,14 +38,18 @@ defmodule Shatter.Store do
       {table_type, [node()]}
     ])
 
-    :mnesia.wait_for_tables([:leases, :pools], 5_000)
-    :ok
+    case :mnesia.wait_for_tables([:leases, :pools], 5_000) do
+      :ok -> :ok
+      {:timeout, tables} -> raise "Mnesia tables timed out waiting: #{inspect(tables)}"
+      {:error, reason} -> raise "Mnesia wait_for_tables failed: #{inspect(reason)}"
+    end
   end
 
   defp create_table(name, opts) do
     case :mnesia.create_table(name, opts) do
       {:atomic, :ok} -> :ok
       {:aborted, {:already_exists, ^name}} -> :ok
+      {:aborted, reason} -> raise "failed to create Mnesia table #{inspect(name)}: #{inspect(reason)}"
     end
   end
 
@@ -90,8 +94,9 @@ defmodule Shatter.Store do
   @spec get_lease_by_mac(binary()) :: {:ok, Lease.t()} | {:error, :not_found} | {:error, term()}
   def get_lease_by_mac(mac) do
     case txn(fn -> :mnesia.index_read(:leases, mac, :mac) end) do
-      {:ok, [record]} -> {:ok, record_to_lease(record)}
       {:ok, []} -> {:error, :not_found}
+      {:ok, [record]} -> {:ok, record_to_lease(record)}
+      {:ok, records} -> {:ok, records |> Enum.map(&record_to_lease/1) |> Enum.max_by(& &1.expires_at, DateTime)}
       err -> err
     end
   end

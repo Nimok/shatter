@@ -4,8 +4,8 @@ defmodule Shatter.AllocatorTest do
   alias Shatter.{Allocator, Pool, Store}
 
   setup do
-    :mnesia.clear_table(:leases)
-    :mnesia.clear_table(:pools)
+    {:atomic, :ok} = :mnesia.clear_table(:leases)
+    {:atomic, :ok} = :mnesia.clear_table(:pools)
     :ok
   end
 
