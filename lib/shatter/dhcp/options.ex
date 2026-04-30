@@ -9,8 +9,7 @@ defmodule Shatter.DHCP.Options do
 
   @spec serialize(list()) :: binary()
   def serialize(options) do
-    encoded = Enum.reduce(options, <<>>, fn opt, acc -> acc <> encode(opt) end)
-    @magic_cookie <> encoded <> <<255>>
+    IO.iodata_to_binary([@magic_cookie | Enum.map(options, &encode/1)] ++ [<<255>>])
   end
 
   defp do_parse(<<>>, acc), do: {:ok, Enum.reverse(acc)}
@@ -18,25 +17,30 @@ defmodule Shatter.DHCP.Options do
   defp do_parse(<<0, rest::binary>>, acc), do: do_parse(rest, acc)
 
   defp do_parse(<<type, len, value::binary-size(len), rest::binary>>, acc) do
-    do_parse(rest, [{type, decode(type, value)} | acc])
+    case decode(type, value) do
+      {:ok, decoded} -> do_parse(rest, [{type, decoded} | acc])
+      {:error, _} = err -> err
+    end
   end
 
   defp do_parse(_, _), do: {:error, :truncated}
 
-  defp decode(1, <<a, b, c, d>>), do: {a, b, c, d}
+  defp decode(1, <<a, b, c, d>>), do: {:ok, {a, b, c, d}}
   defp decode(3, ips), do: decode_ips(ips)
   defp decode(6, ips), do: decode_ips(ips)
-  defp decode(12, v), do: v
-  defp decode(50, <<a, b, c, d>>), do: {a, b, c, d}
-  defp decode(51, <<t::32>>), do: t
-  defp decode(53, <<t>>), do: t
-  defp decode(54, <<a, b, c, d>>), do: {a, b, c, d}
-  defp decode(55, v), do: :binary.bin_to_list(v)
-  defp decode(61, v), do: v
-  defp decode(_, v), do: v
+  defp decode(12, v), do: {:ok, v}
+  defp decode(50, <<a, b, c, d>>), do: {:ok, {a, b, c, d}}
+  defp decode(51, <<t::32>>), do: {:ok, t}
+  defp decode(53, <<t>>), do: {:ok, t}
+  defp decode(54, <<a, b, c, d>>), do: {:ok, {a, b, c, d}}
+  defp decode(55, v), do: {:ok, :binary.bin_to_list(v)}
+  defp decode(61, v), do: {:ok, v}
+  defp decode(_, v), do: {:ok, v}
 
-  defp decode_ips(<<a, b, c, d, rest::binary>>), do: [{a, b, c, d} | decode_ips(rest)]
-  defp decode_ips(_), do: []
+  defp decode_ips(bin), do: decode_ips(bin, [])
+  defp decode_ips(<<a, b, c, d, rest::binary>>, acc), do: decode_ips(rest, [{a, b, c, d} | acc])
+  defp decode_ips(<<>>, acc), do: {:ok, Enum.reverse(acc)}
+  defp decode_ips(_, _), do: {:error, :invalid_ip_list_length}
 
   defp encode({1, {a, b, c, d}}), do: <<1, 4, a, b, c, d>>
   defp encode({3, ips}), do: encode_ip_list(3, ips)
@@ -51,7 +55,7 @@ defmodule Shatter.DHCP.Options do
   defp encode({type, v}) when is_binary(v), do: <<type, byte_size(v)>> <> v
 
   defp encode_ip_list(type, ips) do
-    ip_bin = Enum.reduce(ips, <<>>, fn {a, b, c, d}, acc -> acc <> <<a, b, c, d>> end)
+    ip_bin = IO.iodata_to_binary(Enum.map(ips, fn {a, b, c, d} -> <<a, b, c, d>> end))
     <<type, byte_size(ip_bin)>> <> ip_bin
   end
 end

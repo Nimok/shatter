@@ -52,6 +52,11 @@ defmodule Shatter.DHCP.OptionsTest do
     assert {:error, :truncated} = Options.parse(@magic <> <<53, 10>>)
   end
 
+  test "parse returns error for IP list option with non-multiple-of-4 length" do
+    bin = @magic <> <<3, 5, 192, 168, 1, 1, 0, 255>>
+    assert {:error, :invalid_ip_list_length} = Options.parse(bin)
+  end
+
   test "round-trip preserves all supported option types" do
     options = [
       {1, {255, 255, 255, 0}},

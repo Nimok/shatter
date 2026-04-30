@@ -89,7 +89,7 @@ defmodule Shatter.DHCP.Packet do
     >>
   end
 
-  defp trim_null(bin), do: String.trim_trailing(bin, "\0")
+  defp trim_null(bin), do: hd(:binary.split(bin, <<0>>))
 
   defp pad_to(str, size) when byte_size(str) >= size, do: binary_part(str, 0, size)
 
