@@ -15,7 +15,7 @@ defmodule Shatter.Lease do
 
   @spec transition(t(), state()) :: {:ok, t()} | {:error, :invalid_transition}
   def transition(%__MODULE__{state: from} = lease, to) do
-    if to in Map.fetch!(@valid_transitions, from) do
+    if to in Map.get(@valid_transitions, from, []) do
       {:ok, %{lease | state: to}}
     else
       {:error, :invalid_transition}
