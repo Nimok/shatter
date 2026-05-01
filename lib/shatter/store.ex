@@ -167,7 +167,7 @@ defmodule Shatter.Store do
         {:error, :no_pool}
 
       {:ok, records} ->
-        pool = records |> Enum.map(&record_to_pool/1) |> Enum.min_by(&inspect(&1.id))
+        pool = records |> Enum.map(&record_to_pool/1) |> Enum.min_by(& &1.id)
         {:ok, pool}
 
       err ->
@@ -178,8 +178,10 @@ defmodule Shatter.Store do
   def find_pool_for_giaddr(giaddr) do
     case list_pools() do
       {:ok, pools} ->
-        match = Enum.find(pools, &(not &1.local and same_subnet?(&1, giaddr)))
-        if match, do: {:ok, match}, else: {:error, :no_pool}
+        case Enum.filter(pools, &(not &1.local and same_subnet?(&1, giaddr))) do
+          [] -> {:error, :no_pool}
+          matches -> {:ok, Enum.min_by(matches, & &1.id)}
+        end
 
       err ->
         err

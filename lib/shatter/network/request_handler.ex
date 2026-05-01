@@ -44,8 +44,8 @@ defmodule Shatter.Network.RequestHandler do
             {:stop, reason, state}
         end
 
-      {:error, reason} ->
-        {:stop, reason, state}
+      {:error, _} ->
+        {:stop, :normal, state}
     end
   end
 

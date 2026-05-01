@@ -3,6 +3,8 @@ defmodule Shatter.Network.Listener do
 
   use GenServer
 
+  require Logger
+
   alias Shatter.DHCP.Packet
   alias Shatter.Network.{HandlerRegistry, HandlerSupervisor, RequestHandler}
 
@@ -74,18 +76,35 @@ defmodule Shatter.Network.Listener do
   end
 
   defp compute_server_ip do
-    case :inet.getifaddrs() do
-      {:ok, addrs} ->
-        addrs
-        |> Enum.flat_map(fn {_name, opts} -> Keyword.get_values(opts, :addr) end)
-        |> Enum.find({0, 0, 0, 0}, fn
-          {127, _, _, _} -> false
-          {a, b, c, d} when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d) -> true
-          _ -> false
-        end)
-
-      _ ->
-        {0, 0, 0, 0}
+    case Application.get_env(:shatter, :dhcp_server_ip) do
+      nil -> detect_server_ip()
+      ip -> ip
     end
+  end
+
+  defp detect_server_ip do
+    ip =
+      case :inet.getifaddrs() do
+        {:ok, addrs} ->
+          addrs
+          |> Enum.flat_map(fn {_name, opts} -> Keyword.get_values(opts, :addr) end)
+          |> Enum.find({0, 0, 0, 0}, fn
+            {127, _, _, _} -> false
+            {a, b, c, d} when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d) -> true
+            _ -> false
+          end)
+
+        _ ->
+          {0, 0, 0, 0}
+      end
+
+    if ip == {0, 0, 0, 0} do
+      Logger.warning(
+        "DHCP server: could not determine a non-loopback server IP for option 54. " <>
+          "Set config :shatter, :dhcp_server_ip to a valid IPv4 address."
+      )
+    end
+
+    ip
   end
 end

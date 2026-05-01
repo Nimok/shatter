@@ -350,30 +350,22 @@ defmodule Shatter.Network.IntegrationTest do
     client_a = open_client()
     client_b = open_client()
 
-    send_discover(client_a, @mac_a, port)
+    xid_a = send_discover(client_a, @mac_a, port)
     _offer_a = recv_packet(client_a)
 
     xid_b = send_discover(client_b, @mac_b, port)
     offer_b = recv_packet(client_b)
 
-    # Poll until both handlers are alive — offer_a receipt only guarantees
-    # handler_a ran handle_continue, not that handler_b is also up yet.
+    # Look up handler_a by its xid in the registry — stable and unambiguous.
     handler_a_pid =
       Enum.reduce_while(1..30, nil, fn _, _ ->
-        pids =
-          DynamicSupervisor.which_children(sup)
-          |> Enum.map(fn {_, pid, _, _} -> pid end)
-          |> Enum.filter(&Process.alive?/1)
-
-        if length(pids) >= 2 do
-          {:halt, hd(pids)}
-        else
-          Process.sleep(10)
-          {:cont, nil}
+        case Registry.lookup(reg, xid_a) do
+          [{pid, _}] when is_pid(pid) -> {:halt, pid}
+          _ -> Process.sleep(10); {:cont, nil}
         end
       end)
 
-    assert is_pid(handler_a_pid), "handler_a was not found alive before kill"
+    assert is_pid(handler_a_pid), "handler_a was not found in registry before kill"
 
     Process.exit(handler_a_pid, :kill)
 
