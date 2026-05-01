@@ -55,23 +55,24 @@ defmodule Shatter.Store do
     end
   end
 
+  @old_pool_attrs [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]
+  @new_pool_attrs [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, :local]
+
   defp migrate_table(:pools, _opts) do
     case :mnesia.table_info(:pools, :attributes) do
-      attrs when length(attrs) == 7 ->
-        new_attrs = [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, :local]
-
-        {:atomic, :ok} =
-          :mnesia.transform_table(
-            :pools,
-            fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, false} end,
-            new_attrs
-          )
+      @old_pool_attrs ->
+        case :mnesia.transform_table(
+               :pools,
+               fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, false} end,
+               @new_pool_attrs
+             ) do
+          {:atomic, :ok} -> :ok
+          {:aborted, reason} -> raise "pools table migration failed: #{inspect(reason)}"
+        end
 
       _ ->
         :ok
     end
-
-    :ok
   end
 
   defp migrate_table(_name, _opts), do: :ok
@@ -162,9 +163,15 @@ defmodule Shatter.Store do
   @spec find_pool_for_giaddr(:inet.ip4_address()) :: {:ok, Pool.t()} | {:error, :no_pool | term()}
   def find_pool_for_giaddr({0, 0, 0, 0}) do
     case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_, true}) end) do
-      {:ok, [record | _]} -> {:ok, record_to_pool(record)}
-      {:ok, []} -> {:error, :no_pool}
-      err -> err
+      {:ok, []} ->
+        {:error, :no_pool}
+
+      {:ok, records} ->
+        pool = records |> Enum.map(&record_to_pool/1) |> Enum.min_by(&inspect(&1.id))
+        {:ok, pool}
+
+      err ->
+        err
     end
   end
 

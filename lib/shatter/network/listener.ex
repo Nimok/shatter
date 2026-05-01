@@ -23,7 +23,7 @@ defmodule Shatter.Network.Listener do
   def init({port, handler_sup, handler_reg, handler_timeout}) do
     {:ok, socket} = :gen_udp.open(port, [:binary, active: true, broadcast: true, reuseaddr: true])
     {:ok, port} = :inet.port(socket)
-    {:ok, %{socket: socket, port: port, handler_supervisor: handler_sup, handler_registry: handler_reg, handler_timeout: handler_timeout}}
+    {:ok, %{socket: socket, port: port, handler_supervisor: handler_sup, handler_registry: handler_reg, handler_timeout: handler_timeout, server_ip: compute_server_ip()}}
   end
 
   @impl true
@@ -49,7 +49,8 @@ defmodule Shatter.Network.Listener do
     case message_type(packet) do
       1 ->
         handler_opts =
-          [socket: state.socket, client: client, packet: packet, handler_registry: state.handler_registry] ++
+          [socket: state.socket, client: client, packet: packet,
+           handler_registry: state.handler_registry, server_ip: state.server_ip] ++
             if state.handler_timeout, do: [timeout: state.handler_timeout], else: []
 
         DynamicSupervisor.start_child(state.handler_supervisor, {RequestHandler, handler_opts})
@@ -69,6 +70,22 @@ defmodule Shatter.Network.Listener do
     case List.keyfind(options, 53, 0) do
       {53, type} -> type
       nil -> nil
+    end
+  end
+
+  defp compute_server_ip do
+    case :inet.getifaddrs() do
+      {:ok, addrs} ->
+        addrs
+        |> Enum.flat_map(fn {_name, opts} -> Keyword.get_values(opts, :addr) end)
+        |> Enum.find({0, 0, 0, 0}, fn
+          {127, _, _, _} -> false
+          {a, b, c, d} when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d) -> true
+          _ -> false
+        end)
+
+      _ ->
+        {0, 0, 0, 0}
     end
   end
 end

@@ -16,11 +16,12 @@ defmodule Shatter.Network.RequestHandler do
     packet = Keyword.fetch!(opts, :packet)
     handler_registry = Keyword.get(opts, :handler_registry, Shatter.Network.HandlerRegistry)
     timeout = Keyword.get(opts, :timeout, Application.get_env(:shatter, :dhcp_handler_timeout, @default_timeout))
+    server_ip = Keyword.get(opts, :server_ip, {0, 0, 0, 0})
 
     case Registry.register(handler_registry, packet.xid, :handler) do
       {:ok, _} ->
         {:ok,
-         %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout, server_ip: compute_server_ip()},
+         %{socket: socket, client: client, packet: packet, lease: nil, timeout: timeout, server_ip: server_ip},
          {:continue, :send_offer}}
 
       {:error, {:already_registered, _}} ->
@@ -53,20 +54,19 @@ defmodule Shatter.Network.RequestHandler do
     {:noreply, state, state.timeout}
   end
 
-  def handle_cast({:request, _request_packet}, state) do
+  def handle_cast({:request, request}, state) do
     %{socket: socket, packet: discover, lease: lease} = state
 
-    case Shatter.Store.find_pool_for_giaddr(discover.giaddr) do
-      {:ok, pool} ->
-        bound = %{lease | state: :bound}
-        :ok = Shatter.Store.update_lease(bound)
-        ack = build_ack(discover, bound, pool, state.server_ip)
-        {client_ip, client_port} = state.client
-        send_packet(socket, client_ip, client_port, discover.giaddr, Shatter.DHCP.Packet.serialize(ack))
-        {:stop, :normal, state}
-
-      _ ->
-        {:stop, :normal, state}
+    with :ok <- validate_request(request, discover, lease),
+         {:ok, pool} <- Shatter.Store.find_pool_for_giaddr(discover.giaddr) do
+      bound = %{lease | state: :bound}
+      :ok = Shatter.Store.update_lease(bound)
+      ack = build_ack(discover, bound, pool, state.server_ip)
+      {client_ip, client_port} = state.client
+      send_packet(socket, client_ip, client_port, discover.giaddr, Shatter.DHCP.Packet.serialize(ack))
+      {:stop, :normal, state}
+    else
+      _ -> {:noreply, state, state.timeout}
     end
   end
 
@@ -76,6 +76,19 @@ defmodule Shatter.Network.RequestHandler do
   end
 
   # ── Private ────────────────────────────────────────────────────────────────
+
+  defp validate_request(request, discover, lease) do
+    requested_ip = request.options |> List.keyfind(50, 0) |> then(fn
+      {50, ip} -> ip
+      nil -> request.yiaddr
+    end)
+
+    cond do
+      request.chaddr != discover.chaddr -> {:error, :chaddr_mismatch}
+      requested_ip != lease.ip -> {:error, :ip_mismatch}
+      true -> :ok
+    end
+  end
 
   defp send_packet(socket, {127, _, _, _} = client_ip, client_port, _giaddr, data),
     do: :gen_udp.send(socket, client_ip, client_port, data)
@@ -108,6 +121,7 @@ defmodule Shatter.Network.RequestHandler do
         {53, 2},
         {1, pool.subnet_mask},
         {3, [pool.gateway]},
+        {6, pool.dns_servers},
         {51, pool.lease_duration_seconds},
         {54, server_ip}
       ]
@@ -119,19 +133,4 @@ defmodule Shatter.Network.RequestHandler do
     %{offer | options: List.keyreplace(offer.options, 53, 0, {53, 5})}
   end
 
-  defp compute_server_ip do
-    case :inet.getifaddrs() do
-      {:ok, addrs} ->
-        addrs
-        |> Enum.flat_map(fn {_name, opts} -> Keyword.get_values(opts, :addr) end)
-        |> Enum.find({0, 0, 0, 0}, fn
-          {127, _, _, _} -> false
-          {a, b, c, d} when is_integer(a) and is_integer(b) and is_integer(c) and is_integer(d) -> true
-          _ -> false
-        end)
-
-      _ ->
-        {0, 0, 0, 0}
-    end
-  end
 end
