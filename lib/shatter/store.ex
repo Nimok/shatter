@@ -13,7 +13,8 @@ defmodule Shatter.Store do
 
   @impl true
   def init(:ok) do
-    table_type = Application.get_env(:shatter, __MODULE__, []) |> Keyword.get(:table_type, :disc_copies)
+    configured = Application.get_env(:shatter, __MODULE__, []) |> Keyword.get(:table_type, :disc_copies)
+    table_type = if configured != :ram_copies and node() == :nonode@nohost, do: :ram_copies, else: configured
     :ok = ensure_schema(table_type)
     :ok = ensure_tables(table_type)
     {:ok, %{}}
@@ -63,7 +64,7 @@ defmodule Shatter.Store do
       @old_pool_attrs ->
         case :mnesia.transform_table(
                :pools,
-               fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, false} end,
+               fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, true} end,
                @new_pool_attrs
              ) do
           {:atomic, :ok} -> :ok

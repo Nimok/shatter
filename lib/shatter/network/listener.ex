@@ -23,9 +23,23 @@ defmodule Shatter.Network.Listener do
 
   @impl true
   def init({port, handler_sup, handler_reg, handler_timeout}) do
-    {:ok, socket} = :gen_udp.open(port, [:binary, active: true, broadcast: true, reuseaddr: true])
-    {:ok, port} = :inet.port(socket)
-    {:ok, %{socket: socket, port: port, handler_supervisor: handler_sup, handler_registry: handler_reg, handler_timeout: handler_timeout, server_ip: compute_server_ip()}}
+    case :gen_udp.open(port, [:binary, active: :once, broadcast: true, reuseaddr: true]) do
+      {:ok, socket} ->
+        {:ok, actual_port} = :inet.port(socket)
+        {:ok, %{socket: socket, port: actual_port, handler_supervisor: handler_sup, handler_registry: handler_reg, handler_timeout: handler_timeout, server_ip: compute_server_ip()}}
+
+      {:error, :eacces} ->
+        Logger.error("DHCP listener: permission denied on port #{port} — run as root or set config :shatter, :dhcp_port to a port > 1024")
+        {:stop, :eacces}
+
+      {:error, :eaddrinuse} ->
+        Logger.error("DHCP listener: port #{port} is already in use")
+        {:stop, :eaddrinuse}
+
+      {:error, reason} ->
+        Logger.error("DHCP listener: failed to open UDP socket on port #{port}: #{inspect(reason)}")
+        {:stop, reason}
+    end
   end
 
   @impl true
@@ -34,7 +48,9 @@ defmodule Shatter.Network.Listener do
   end
 
   @impl true
-  def handle_info({:udp, _sock, client_ip, client_port, data}, state) do
+  def handle_info({:udp, sock, client_ip, client_port, data}, state) do
+    :inet.setopts(sock, active: :once)
+
     case Packet.parse(data) do
       {:ok, packet} -> dispatch(packet, {client_ip, client_port}, state)
       {:error, _} -> :ok
@@ -55,7 +71,10 @@ defmodule Shatter.Network.Listener do
            handler_registry: state.handler_registry, server_ip: state.server_ip] ++
             if state.handler_timeout, do: [timeout: state.handler_timeout], else: []
 
-        DynamicSupervisor.start_child(state.handler_supervisor, {RequestHandler, handler_opts})
+        case DynamicSupervisor.start_child(state.handler_supervisor, {RequestHandler, handler_opts}) do
+          {:ok, _} -> :ok
+          {:error, reason} -> Logger.warning("DHCP listener: failed to start handler for xid #{packet.xid}: #{inspect(reason)}")
+        end
 
       3 ->
         case Registry.lookup(state.handler_registry, packet.xid) do

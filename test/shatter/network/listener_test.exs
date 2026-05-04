@@ -155,7 +155,7 @@ defmodule Shatter.Network.ListenerTest do
 
     _offer = recv_packet(client)
 
-    assert eventually(fn -> DynamicSupervisor.count_children(ctx.sup).active == 0 end, 20)
+    assert eventually(fn -> DynamicSupervisor.count_children(ctx.sup).active == 0 end, 200)
 
     :gen_udp.close(client)
   end

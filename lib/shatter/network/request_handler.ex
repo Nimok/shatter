@@ -84,7 +84,7 @@ defmodule Shatter.Network.RequestHandler do
     end)
 
     cond do
-      request.chaddr != discover.chaddr -> {:error, :chaddr_mismatch}
+      trim_chaddr(request) != trim_chaddr(discover) -> {:error, :chaddr_mismatch}
       requested_ip != lease.ip -> {:error, :ip_mismatch}
       true -> :ok
     end
