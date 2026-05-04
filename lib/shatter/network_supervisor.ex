@@ -7,9 +7,12 @@ defmodule Shatter.NetworkSupervisor do
 
   @impl true
   def init(:ok) do
+    port = Application.get_env(:shatter, :dhcp_port, 67)
+
     children = [
-      {Shatter.Network.Listener, []},
-      {Shatter.Network.HandlerSupervisor, []}
+      Shatter.Network.HandlerRegistry,
+      {Shatter.Network.HandlerSupervisor, [name: Shatter.Network.HandlerSupervisor]},
+      {Shatter.Network.Listener, port: port}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

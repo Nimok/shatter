@@ -3,6 +3,8 @@ defmodule Shatter.Store do
 
   use GenServer
 
+  import Bitwise, only: [&&&: 2]
+
   alias Shatter.{Lease, Pool}
 
   # ── Lifecycle ──────────────────────────────────────────────────────────────
@@ -11,7 +13,8 @@ defmodule Shatter.Store do
 
   @impl true
   def init(:ok) do
-    table_type = Application.get_env(:shatter, __MODULE__, []) |> Keyword.get(:table_type, :disc_copies)
+    configured = Application.get_env(:shatter, __MODULE__, []) |> Keyword.get(:table_type, :disc_copies)
+    table_type = if configured != :ram_copies and node() == :nonode@nohost, do: :ram_copies, else: configured
     :ok = ensure_schema(table_type)
     :ok = ensure_tables(table_type)
     {:ok, %{}}
@@ -34,7 +37,7 @@ defmodule Shatter.Store do
     ])
 
     create_table(:pools, [
-      {:attributes, [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]},
+      {:attributes, [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, :local]},
       {table_type, [node()]}
     ])
 
@@ -48,10 +51,32 @@ defmodule Shatter.Store do
   defp create_table(name, opts) do
     case :mnesia.create_table(name, opts) do
       {:atomic, :ok} -> :ok
-      {:aborted, {:already_exists, ^name}} -> :ok
+      {:aborted, {:already_exists, ^name}} -> migrate_table(name, opts)
       {:aborted, reason} -> raise "failed to create Mnesia table #{inspect(name)}: #{inspect(reason)}"
     end
   end
+
+  @old_pool_attrs [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds]
+  @new_pool_attrs [:id, :range_start, :range_end, :subnet_mask, :gateway, :dns_servers, :lease_duration_seconds, :local]
+
+  defp migrate_table(:pools, _opts) do
+    case :mnesia.table_info(:pools, :attributes) do
+      @old_pool_attrs ->
+        case :mnesia.transform_table(
+               :pools,
+               fn {_, id, rs, re, sm, gw, dns, dur} -> {:pools, id, rs, re, sm, gw, dns, dur, true} end,
+               @new_pool_attrs
+             ) do
+          {:atomic, :ok} -> :ok
+          {:aborted, reason} -> raise "pools table migration failed: #{inspect(reason)}"
+        end
+
+      _ ->
+        :ok
+    end
+  end
+
+  defp migrate_table(_name, _opts), do: :ok
 
   # ── Lease API ──────────────────────────────────────────────────────────────
 
@@ -130,9 +155,37 @@ defmodule Shatter.Store do
 
   @spec list_pools() :: {:ok, [Pool.t()]} | {:error, term()}
   def list_pools do
-    case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_}) end) do
+    case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_, :_}) end) do
       {:ok, records} -> {:ok, Enum.map(records, &record_to_pool/1)}
       err -> err
+    end
+  end
+
+  @spec find_pool_for_giaddr(:inet.ip4_address()) :: {:ok, Pool.t()} | {:error, :no_pool | term()}
+  def find_pool_for_giaddr({0, 0, 0, 0}) do
+    case txn(fn -> :mnesia.match_object({:pools, :_, :_, :_, :_, :_, :_, :_, true}) end) do
+      {:ok, []} ->
+        {:error, :no_pool}
+
+      {:ok, records} ->
+        pool = records |> Enum.map(&record_to_pool/1) |> Enum.min_by(& &1.id)
+        {:ok, pool}
+
+      err ->
+        err
+    end
+  end
+
+  def find_pool_for_giaddr(giaddr) do
+    case list_pools() do
+      {:ok, pools} ->
+        case Enum.filter(pools, &(not &1.local and same_subnet?(&1, giaddr))) do
+          [] -> {:error, :no_pool}
+          matches -> {:ok, Enum.min_by(matches, & &1.id)}
+        end
+
+      err ->
+        err
     end
   end
 
@@ -154,10 +207,20 @@ defmodule Shatter.Store do
   end
 
   defp pool_to_record(%Pool{} = p) do
-    {:pools, p.id, p.range_start, p.range_end, p.subnet_mask, p.gateway, p.dns_servers, p.lease_duration_seconds}
+    {:pools, p.id, p.range_start, p.range_end, p.subnet_mask, p.gateway, p.dns_servers, p.lease_duration_seconds, p.local}
+  end
+
+  defp record_to_pool({:pools, id, range_start, range_end, subnet_mask, gateway, dns_servers, lease_duration_seconds, local}) do
+    %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds, local: local}
   end
 
   defp record_to_pool({:pools, id, range_start, range_end, subnet_mask, gateway, dns_servers, lease_duration_seconds}) do
-    %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds}
+    %Pool{id: id, range_start: range_start, range_end: range_end, subnet_mask: subnet_mask, gateway: gateway, dns_servers: dns_servers, lease_duration_seconds: lease_duration_seconds, local: false}
   end
+
+  defp same_subnet?(%Pool{range_start: start, subnet_mask: mask}, ip) do
+    (ip_to_int(ip) &&& ip_to_int(mask)) == (ip_to_int(start) &&& ip_to_int(mask))
+  end
+
+  defp ip_to_int({a, b, c, d}), do: a * 16_777_216 + b * 65_536 + c * 256 + d
 end
