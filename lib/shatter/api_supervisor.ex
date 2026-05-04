@@ -8,7 +8,7 @@ defmodule Shatter.APISupervisor do
   @impl true
   def init(:ok) do
     children = [
-      {Bandit, plug: Shatter.API.Router, port: 4000}
+      {Bandit, plug: Shatter.API.Router, port: Application.get_env(:shatter, :http_port, 4000)}
     ]
 
     Supervisor.init(children, strategy: :one_for_one)
